@@ -8,7 +8,7 @@ _Hackfest 2.0 ft. Turgon AI — Team Dual Core_
 
 Mohd Aafi (Team Lead) · Rahul Kumar (Frontend Developer)
 
-[![Live Demo](https://img.shields.io/badge/Live_Demo-▶_Try_It-22c55e?style=for-the-badge)](https://schema-doc-ai-hackfest-2-0-ft-turgo.vercel.app)
+NOTICE! Live Demo has been taken down due to increase in API Usage, Demo Video still accessible on the page :)
 
 [![Next.js](https://img.shields.io/badge/Next.js-15-000000?logo=next.js&logoColor=white)](https://nextjs.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
