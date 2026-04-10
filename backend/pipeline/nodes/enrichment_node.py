@@ -99,29 +99,32 @@ def enrich_metadata_node(state: AgentState) -> Dict[str, Any]:
     }
     table_list = list(simplified_schema.keys())
 
-    system_prompt = f"""You are a Data Architect. Generate a JSON Data Dictionary.
+    system_prompt = f"""You are a Data Architect. Your task is to enhance this database schema with business meanings.
 
-INPUT SCHEMA ({len(table_list)} tables): {json.dumps(simplified_schema, separators=(',', ':'))}
+DATABASE SCHEMA (must preserve ALL {len(table_list)} tables):
+{json.dumps(simplified_schema, indent=2)}
 
-RULES:
-1. Output ONLY valid JSON — no markdown fences, no explanation text.
-2. You MUST include ALL {len(table_list)} tables: {json.dumps(table_list)}
-3. You MUST include EVERY column listed for each table — do not skip any.
-4. If a column is ambiguous (e.g. 'val_x', 'status'), call 'lookup_column_usage' first.
-5. Keep descriptions concise (1 sentence).
+CRITICAL RULES:
+1. Return ONLY valid JSON - no text before or after
+2. Include ALL these tables: {', '.join(table_list)}
+3. For each table, include all columns that exist
+4. Do NOT drop or skip any tables or columns
 
-OUTPUT FORMAT:
+JSON STRUCTURE:
 {{
-  "TableName": {{
+  "users": {{
     "columns": {{
-      "col": {{"description":"...","business_logic":"...","tags":["PII"],"potential_pii":false}}
+      "id": {{"description": "User identifier", "business_logic": "Primary key", "tags": [], "potential_pii": false}},
+      "email": {{"description": "User email address", "business_logic": "Contact info", "tags": ["PII"], "potential_pii": true}}
     }}
   }}
-}}"""
+}}
+
+Start with your JSON response:"""
 
     messages = [
         SystemMessage(content=system_prompt),
-        HumanMessage(content="Begin enrichment."),
+        HumanMessage(content="Enhance this schema. Output ONLY valid JSON."),
     ]
 
     if previous_errors:
@@ -211,6 +214,13 @@ OUTPUT FORMAT:
 
     # --- 4. Parsing & Merge Logic ---
     try:
+        if not final_content or not final_content.strip():
+            logger.error(f"❌ LLM returned empty content after {max_turns} turns")
+            logger.warning(f"   Falling back to raw schema ({len(schema_raw)} tables)")
+            if schema_raw and len(schema_raw) > 0:
+                return {"schema_enriched": copy.deepcopy(schema_raw), "schema_hash": current_hash}
+            return {"errors": ["LLM returned empty response and no raw schema available"]}
+        
         logger.info(f"EXTRACTING JSON FROM: {final_content[:500]}...")
         logger.info(f"Final content length: {len(final_content)} chars")
         
@@ -263,6 +273,14 @@ OUTPUT FORMAT:
                 )
         
         logger.info(f"✅ Final enriched state has {len(final_enriched_state)} tables")
+        
+        # ── FALLBACK: If enrichment returned 0 tables, use raw schema ──
+        if len(final_enriched_state) == 0 and len(schema_raw) > 0:
+            logger.warning(f"⚠️ Enrichment returned 0 tables! Raw schema has {len(schema_raw)} tables.")
+            logger.warning(f"   Using raw schema as fallback for this enrichment pass.")
+            logger.warning(f"   Parsed enrichment was: {json.dumps(parsed_enrichment, indent=2)[:500]}")
+            final_enriched_state = copy.deepcopy(schema_raw)
+            logger.info(f"   Fallback: Using all {len(final_enriched_state)} raw tables")
 
         with open(cache_file, "w") as f:
             json.dump(
@@ -275,4 +293,11 @@ OUTPUT FORMAT:
 
     except Exception as e:
         logger.error(f"Parsing/Merge Error: {e}")
+        logger.error(f"   Final content was: {final_content[:500]}")
+        
+        # ── FALLBACK: Return raw schema if enrichment parsing fails ──
+        if schema_raw and len(schema_raw) > 0:
+            logger.warning(f"⚠️ Enrichment parsing failed, using raw schema as fallback ({len(schema_raw)} tables)")
+            return {"schema_enriched": copy.deepcopy(schema_raw), "schema_hash": current_hash}
+        
         return {"errors": [f"Enrichment Error: {str(e)}"]}
