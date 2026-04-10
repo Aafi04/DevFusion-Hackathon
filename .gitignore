@@ -48,3 +48,13 @@ data/logs/
 htmlcov/
 .coverage
 nonexistent.db
+test_*.py
+
+# ── Documentation & Deployment (not required for runtime) ──
+docs/
+render-deploy.sh
+vercel-deploy.sh
+verify-deployment.sh
+DEPLOYMENT.md
+DEPLOY_NOW.md
+QUICKSTART.md
