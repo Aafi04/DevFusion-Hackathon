@@ -4,6 +4,7 @@ Production-grade API server wrapping the LangGraph pipeline.
 """
 import sys
 import logging
+import subprocess
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -32,10 +33,44 @@ async def lifespan(app: FastAPI):
     try:
         settings.validate_keys()
         logger.info("✅ Configuration validated.")
+        
+        # Generate sample databases if they don't exist
+        ensure_sample_databases()
+        
     except Exception as e:
         logger.warning(f"⚠️ Config warning: {e}")
     yield
     logger.info("SchemaDoc AI API shutting down.")
+
+
+def ensure_sample_databases():
+    """Generate sample databases on startup if they don't exist."""
+    import subprocess
+    data_dir = settings.DATA_DIR
+    required_dbs = ["demo.db", "ecommerce.db", "music.db"]
+    missing_dbs = [db for db in required_dbs if not (data_dir / db).exists()]
+    
+    if missing_dbs:
+        logger.info(f"🔄 Generating missing sample databases: {missing_dbs}")
+        try:
+            generator_script = Path(__file__).resolve().parent.parent / "data" / "generate_samples.py"
+            if generator_script.exists():
+                result = subprocess.run(
+                    [sys.executable, str(generator_script)],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                if result.returncode == 0:
+                    logger.info("✅ Sample databases generated successfully")
+                else:
+                    logger.warning(f"⚠️ Database generation warning: {result.stderr}")
+            else:
+                logger.warning(f"⚠️ Database generator script not found at {generator_script}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not generate sample databases: {e}")
+    else:
+        logger.info(f"✅ All {len(required_dbs)} sample databases present")
 
 
 # ── App Instance ──
