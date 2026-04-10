@@ -1,16 +1,18 @@
-"""
-Pipeline orchestration service.
+"""Pipeline orchestration service.
 Manages pipeline runs, caches results, tracks execution.
 Runs are scoped by session_id so each browser session is isolated.
+Integrates with Supabase for persistent caching across restarts.
 """
 import uuid
 import json
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
+
 from backend.pipeline.graph import build_pipeline
-from backend.core.config import settings
+from backend.core.config import settings, AppConfig
 from backend.core.utils import DecimalEncoder
+from backend.core.supabase_client import get_supabase_cache
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +37,34 @@ def clear_all_runs(session_id: str = ""):
 
 
 def get_run(run_id: str, session_id: str = "") -> Optional[Dict[str, Any]]:
-    """Look up a run. Searches the given session first, then falls back to all sessions."""
+    """Look up a run. Checks Supabase cache first, then in-memory store."""
+    # Check Supabase cache first
+    if AppConfig.SUPABASE_URL and AppConfig.SUPABASE_KEY:
+        cache = get_supabase_cache(AppConfig.SUPABASE_URL, AppConfig.SUPABASE_KEY)
+        cached_run = cache.get_cached_run(run_id, session_id)
+        if cached_run:
+            # Reconstruct run_record from cache
+            return {
+                "run_id": run_id,
+                "session_id": cached_run["session_id"],
+                "status": "completed",
+                "created_at": cached_run["created_at"],
+                "schema_enriched": cached_run["enriched_schema"],
+                "pipeline_log": [],  # For now, not cached
+                "errors": [],
+            }
+    
+    # Fall back to in-memory store
     if session_id:
         store = _session_store(session_id)
         if run_id in store:
             return store[run_id]
+    
     # Fallback: search all sessions (so run_id-based URLs still work)
     for store in _pipeline_runs.values():
         if run_id in store:
             return store[run_id]
+    
     return None
 
 
@@ -152,6 +173,21 @@ def execute_pipeline(connection_string: str, session_id: str = "") -> Dict[str, 
             run_record["status"] = "completed"
             run_record["schema_enriched"] = clean_enriched
             run_record["pipeline_log"] = pipeline_log
+            
+            # Cache to Supabase (if configured)
+            if AppConfig.SUPABASE_URL and AppConfig.SUPABASE_KEY:
+                try:
+                    cache = get_supabase_cache(AppConfig.SUPABASE_URL, AppConfig.SUPABASE_KEY)
+                    if cache.is_enabled():
+                        cache.set_cached_run(
+                            run_id=run_id,
+                            session_id=session_id,
+                            enriched_schema=clean_enriched,
+                            raw_schema=final_state.get("schema_raw", {}),
+                            ttl_days=7
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to cache run to Supabase: {e}. Continuing with in-memory storage.")
         else:
             run_record["status"] = "failed"
             run_record["errors"] = final_state.get("errors", [])

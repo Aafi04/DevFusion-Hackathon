@@ -5,12 +5,14 @@ POST /api/chat — Send a message, get AI response
 import json
 import logging
 from fastapi import APIRouter, HTTPException, Request
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from shared.schemas import ChatRequest, ChatResponse
 from backend.services.pipeline_service import get_run
-from backend.core.config import settings
+from backend.services.schema_compression import compress_schema_for_chat
+from backend.core.config import AppConfig
+from backend.core.llm_provider import create_llm_provider
+from backend.core.token_counter import estimate_messages_tokens, TokenBudget
 from backend.core.exceptions import DownstreamServiceError
 from backend.core.utils import DecimalEncoder
 from backend.core.rate_limiter import limiter, CHAT_LIMIT
@@ -36,18 +38,18 @@ async def chat(request: Request, body: ChatRequest):
         raise HTTPException(status_code=400, detail="Pipeline run has no enriched schema data")
 
     try:
-        context_json = json.dumps(schema_data, cls=DecimalEncoder)
+        context_json = compress_schema_for_chat(schema_data)
         system_prompt = f"""You are a Senior Database Architect and SQL Expert.
 
-SCHEMA CONTEXT (AI-enriched data dictionary):
+SCHEMA CONTEXT (compressed data dictionary):
 {context_json}
 
 DIRECTIVES:
 1. If the user asks a natural language question about the data, generate the EXACT SQL query needed.
 2. Output SQL in a ```sql code block.
-3. Briefly explain the query logic referencing the schema descriptions and relationships.
+3. Briefly explain the query logic referencing the schema context and relationships.
 4. All JOINs must use the exact foreign key relationships from the schema context.
-5. If asked about schema metadata (PII columns, health scores, etc.), answer from context directly.
+5. If asked about schema metadata (structure, entity types), answer from context directly.
 6. Be concise and precise."""
 
         messages = [SystemMessage(content=system_prompt)]
@@ -58,12 +60,37 @@ DIRECTIVES:
                 messages.append(AIMessage(content=msg["content"]))
         messages.append(HumanMessage(content=body.message))
 
-        llm = ChatGoogleGenerativeAI(
-            model=settings.GEMINI_MODEL,
-            google_api_key=settings.GOOGLE_API_KEY,
-            temperature=0,
-        )
-        response = llm.invoke(messages)
+        # Initialize LLM provider with token budgeting
+        try:
+            if AppConfig.LLM_PROVIDER.lower() == "groq":
+                llm_provider = create_llm_provider(
+                    provider_type="groq",
+                    api_key=AppConfig.GROQ_API_KEY,
+                    model=AppConfig.GROQ_MODEL,
+                    temperature=AppConfig.LLM_TEMPERATURE,
+                )
+            else:
+                llm_provider = create_llm_provider(
+                    provider_type="gemini",
+                    api_key=AppConfig.GEMINI_API_KEY,
+                    model=AppConfig.GEMINI_MODEL,
+                    temperature=AppConfig.LLM_TEMPERATURE,
+                )
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM provider: {e}")
+            raise DownstreamServiceError(service="LLM", message="LLM initialization failed")
+        
+        # Estimate tokens before calling
+        estimated_tokens = estimate_messages_tokens(messages, llm_provider.get_model_name())
+        token_budget = TokenBudget(monthly_limit=AppConfig.TOKEN_MONTHLY_BUDGET)
+        is_safe, budget_msg = token_budget.check_budget(estimated_tokens, threshold_percent=AppConfig.TOKEN_BUDGET_THRESHOLD_PERCENT)
+        
+        if not is_safe:
+            logger.warning(f"Token budget warning for chat: {budget_msg}")
+        
+        logger.info(f"Chat request - Estimated tokens: {estimated_tokens}, Budget: {budget_msg}")
+        
+        response = llm_provider.invoke(messages)
         response_text = response.content.strip()
 
         # Extract SQL if present and strip it from the prose

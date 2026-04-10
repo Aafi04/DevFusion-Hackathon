@@ -1,6 +1,6 @@
 """
-AI Enrichment Node — Gemini-powered semantic analysis with ReAct tool-calling.
-Ported from src/pipeline/nodes/enrichment_node.py with updated imports.
+AI Enrichment Node — LLM-powered semantic analysis with ReAct tool-calling.
+Supports Groq, Gemini, and other LLM backends via abstraction layer.
 """
 import json
 import re
@@ -11,12 +11,13 @@ from decimal import Decimal
 from typing import Dict, Any, List, Union
 from datetime import datetime
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage
 from langchain_core.tools import tool
 
 from backend.core.state import AgentState
 from backend.core.config import AppConfig
+from backend.core.llm_provider import create_llm_provider
+from backend.core.token_counter import estimate_messages_tokens, TokenBudget
 from backend.services.usage_search import usage_search
 from backend.core.utils import DecimalEncoder
 
@@ -129,12 +130,37 @@ OUTPUT FORMAT:
         )
 
     # --- 3. The Execution Loop ---
-    llm = ChatGoogleGenerativeAI(
-        model=AppConfig.GEMINI_MODEL,
-        google_api_key=AppConfig.GEMINI_API_KEY,
-        temperature=0,
-    )
-    llm_with_tools = llm.bind_tools([lookup_column_usage])
+    
+    # Initialize LLM provider
+    try:
+        if AppConfig.LLM_PROVIDER.lower() == "groq":
+            llm_provider = create_llm_provider(
+                provider_type="groq",
+                api_key=AppConfig.GROQ_API_KEY,
+                model=AppConfig.GROQ_MODEL,
+                temperature=AppConfig.LLM_TEMPERATURE,
+            )
+        else:  # fallback to gemini
+            llm_provider = create_llm_provider(
+                provider_type="gemini",
+                api_key=AppConfig.GEMINI_API_KEY,
+                model=AppConfig.GEMINI_MODEL,
+                temperature=AppConfig.LLM_TEMPERATURE,
+            )
+    except Exception as e:
+        logger.error(f"Failed to initialize LLM provider: {e}")
+        return {"errors": [f"LLM initialization error: {str(e)}"]}
+    
+    # Token budgeting
+    token_budget = TokenBudget(monthly_limit=AppConfig.TOKEN_MONTHLY_BUDGET)
+    estimated_prompt_tokens = estimate_messages_tokens(messages, llm_provider.get_model_name())
+    is_safe, budget_msg = token_budget.check_budget(estimated_prompt_tokens, threshold_percent=AppConfig.TOKEN_BUDGET_THRESHOLD_PERCENT)
+    
+    if not is_safe:
+        logger.error(f"Token budget check failed: {budget_msg}")
+        return {"errors": [f"Token budget exceeded: {budget_msg}"]}
+    
+    logger.info(f"Token budget check: {budget_msg}. Estimated prompt tokens: {estimated_prompt_tokens}")
 
     max_turns = 6
     turn = 0
@@ -143,7 +169,7 @@ OUTPUT FORMAT:
     while turn < max_turns:
         turn += 1
         try:
-            response = llm_with_tools.invoke(messages)
+            response = llm_provider.invoke(messages, tools=[lookup_column_usage])
             messages.append(response)
 
             if response.tool_calls:

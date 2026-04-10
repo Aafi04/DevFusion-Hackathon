@@ -86,10 +86,12 @@ async def list_available_databases():
     data_dir = settings.DATA_DIR
 
     for db_id, name, filename, table_count in [
+        ("demo", "Demo Database (3 Tables, ~500 rows) [SQLite]", "demo.db", 3),
+        ("ecommerce", "E-Commerce Store (5 Tables, ~2.5k rows) [SQLite]", "ecommerce.db", 5),
+        ("music", "Music Store (4 Tables, ~2k rows) [SQLite]", "music.db", 4),
         ("chinook_local", "Chinook Music Store (11 Tables) [SQLite]", "chinook.db", 11),
         ("olist_local", "Olist E-Commerce Brazil (8 Tables) [SQLite]", "olist.db", 8),
         ("bikestore_local", "Bike Store Sales (9 Tables) [SQLite]", "bikestore.db", 9),
-        ("demo", "Demo Database (3 Tables) [SQLite]", "demo.db", 3),
     ]:
         path = data_dir / filename
         if path.exists():

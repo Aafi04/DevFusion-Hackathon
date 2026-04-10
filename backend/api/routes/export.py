@@ -1,5 +1,4 @@
-"""
-Export API Routes — generate markdown, JSON and business-ready reports.
+"""Export API Routes — generate markdown, JSON and business-ready reports.
 GET /api/export/{run_id}/json
 GET /api/export/{run_id}/markdown
 GET /api/export/{run_id}/report  — AI-enhanced business report (JSON)
@@ -10,10 +9,12 @@ import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, JSONResponse
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
+
 from backend.services.pipeline_service import get_run
-from backend.core.config import settings
+from backend.core.config import AppConfig
+from backend.core.llm_provider import create_llm_provider
+from backend.core.token_counter import estimate_messages_tokens, TokenBudget
 from backend.core.utils import DecimalEncoder
 from backend.core.rate_limiter import limiter, EXPORT_REPORT_LIMIT, READ_LIMIT
 
@@ -133,7 +134,10 @@ async def export_json(request: Request, run_id: str):
     return Response(
         content=content,
         media_type="application/json",
-        headers={"Content-Disposition": f"attachment; filename=schema_{run_id}.json"},
+        headers={
+            "Content-Disposition": f"attachment; filename=schema_{run_id}.json",
+            "Cache-Control": "public, max-age=3600"
+        },
     )
 
 
@@ -153,7 +157,8 @@ async def export_markdown(request: Request, run_id: str):
         content=md_content,
         media_type="text/markdown",
         headers={
-            "Content-Disposition": f"attachment; filename=data_dictionary_{run_id}.md"
+            "Content-Disposition": f"attachment; filename=data_dictionary_{run_id}.md",
+            "Cache-Control": "public, max-age=3600"
         },
     )
 
@@ -263,15 +268,42 @@ Generate a JSON object with these exact keys:
 
 Output ONLY valid JSON. No markdown. No explanation."""
 
-        llm = ChatGoogleGenerativeAI(
-            model=settings.GEMINI_MODEL,
-            google_api_key=settings.GOOGLE_API_KEY,
-            temperature=0,
-        )
-        response = llm.invoke([
+        # Initialize LLM provider
+        try:
+            if AppConfig.LLM_PROVIDER.lower() == "groq":
+                llm_provider = create_llm_provider(
+                    provider_type="groq",
+                    api_key=AppConfig.GROQ_API_KEY,
+                    model=AppConfig.GROQ_MODEL,
+                    temperature=AppConfig.LLM_TEMPERATURE,
+                )
+            else:
+                llm_provider = create_llm_provider(
+                    provider_type="gemini",
+                    api_key=AppConfig.GEMINI_API_KEY,
+                    model=AppConfig.GEMINI_MODEL,
+                    temperature=AppConfig.LLM_TEMPERATURE,
+                )
+        except Exception as e:
+            logger.warning(f"LLM provider initialization failed: {e}")
+            return {
+                "executive_summary": "AI overview generation was not available for this run.",
+                "business_domain": "Unknown",
+                "key_findings": [],
+                "recommendations": [],
+                "data_governance_notes": "Review PII columns manually.",
+                "overall_assessment": "Manual review recommended.",
+            }
+        
+        # Estimate tokens
+        messages = [
             SystemMessage(content="You output only valid JSON."),
             HumanMessage(content=prompt),
-        ])
+        ]
+        estimated_tokens = estimate_messages_tokens(messages, llm_provider.get_model_name())
+        logger.info(f"Report generation - Estimated tokens: {estimated_tokens}")
+        
+        response = llm_provider.invoke(messages)
         import re
         text = response.content.strip()
         # Extract JSON from possible markdown fences
@@ -499,12 +531,17 @@ async def export_report_json(request: Request, run_id: str):
     # Serve from cache if available
     cache_key = f"{sid}:{run_id}"
     if cache_key in _report_cache:
-        return JSONResponse(content=_report_cache[cache_key])
+        response = JSONResponse(content=_report_cache[cache_key])
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        return response
 
     report = generate_business_report(schema, run_id)
     clean = json.loads(json.dumps(report, cls=DecimalEncoder))
     _report_cache[cache_key] = clean
-    return JSONResponse(content=clean)
+    
+    response = JSONResponse(content=clean)
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
 
 
 @router.get("/{run_id}/report/markdown")
@@ -532,6 +569,7 @@ async def export_report_markdown(request: Request, run_id: str):
         content=md_content,
         media_type="text/markdown",
         headers={
-            "Content-Disposition": f"attachment; filename=business_report_{run_id}.md"
+            "Content-Disposition": f"attachment; filename=business_report_{run_id}.md",
+            "Cache-Control": "public, max-age=3600"
         },
     )

@@ -1,11 +1,13 @@
-"""
-Deterministic Validation Gate — anti-hallucination guard.
-Ported from src/pipeline/nodes/validation_node.py with updated imports.
+"""Deterministic Validation Gate — anti-hallucination guard with exponential backoff.
+Ported from src/pipeline/nodes/validation_node.py with retry backoff and token budgeting.
 """
 import logging
+import time
 from typing import Dict, Any, List, Set
+
 from backend.core.state import AgentState
 from backend.core.config import AppConfig
+from backend.core.token_counter import TokenBudget
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +54,40 @@ def validate_schema_node(state: AgentState) -> Dict[str, Any]:
                 f"Table '{table_name}' has hallucinated columns: {list(extra)}"
             )
 
-    # 3. Decision Logic
+    # 3. Decision Logic with Token Budgeting
     if errors:
         logger.warning(f"Validation Failed with {len(errors)} errors.")
+        
+        # Check if we should retry
+        if current_retries >= AppConfig.MAX_RETRIES:
+            logger.error(f"Max retries ({AppConfig.MAX_RETRIES}) exceeded. Failing schema.")
+            return {
+                "errors": errors + ["Max retries exceeded. Schema enrichment failed."],
+                "validation_status": "FAILED_FINAL",
+                "retry_count": current_retries,
+            }
+        
+        # Check token budget before retry
+        token_budget = TokenBudget(monthly_limit=AppConfig.TOKEN_MONTHLY_BUDGET)
+        remaining = token_budget.get_remaining_tokens()
+        
+        if remaining < 10_000:  # Need ~10k tokens for retry enrichment
+            logger.error(f"Token budget insufficient for retry. Remaining: {remaining} tokens")
+            errors.append(f"Token budget exhausted ({remaining} tokens remaining). Cannot retry.")
+            return {
+                "errors": errors,
+                "validation_status": "FAILED_BUDGET",
+                "retry_count": current_retries,
+            }
+        
+        # Exponential backoff: retry with wait
+        wait_time = 2 ** current_retries  # 1s, 2s, 4s, 8s
+        logger.info(f"Scheduling retry #{current_retries + 1}/{AppConfig.MAX_RETRIES} after {wait_time}s...")
+        time.sleep(wait_time)
+        
         return {
             "errors": errors,
-            "validation_status": "FAILED",
+            "validation_status": "RETRY",
             "retry_count": current_retries + 1,
         }
     else:

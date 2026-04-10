@@ -1,5 +1,4 @@
-"""
-Schema API Routes — retrieve enriched schema data.
+"""Schema API Routes — retrieve enriched schema data.
 GET /api/schema/{run_id} — Get full schema
 GET /api/schema/{run_id}/overview — Get AI overview
 GET /api/schema/{run_id}/table/{table_name} — Get specific table
@@ -7,10 +6,13 @@ GET /api/schema/{run_id}/table/{table_name} — Get specific table
 import json
 import logging
 from fastapi import APIRouter, HTTPException, Request
-from langchain_google_genai import ChatGoogleGenerativeAI
+from fastapi.responses import JSONResponse
 from langchain_core.messages import HumanMessage
+
 from backend.services.pipeline_service import get_run
-from backend.core.config import settings
+from backend.core.config import AppConfig
+from backend.core.llm_provider import create_llm_provider
+from backend.core.token_counter import estimate_messages_tokens, TokenBudget
 from backend.core.utils import DecimalEncoder
 from backend.core.rate_limiter import limiter, SCHEMA_OVERVIEW_LIMIT, READ_LIMIT
 
@@ -29,12 +31,18 @@ async def get_schema(request: Request, run_id: str):
     run = get_run(run_id, session_id=_sid(request))
     if not run:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-    return {
+    
+    response_data = {
         "run_id": run_id,
         "status": run["status"],
         "schema": run.get("schema_enriched"),
         "pipeline_log": run.get("pipeline_log", []),
     }
+    
+    # Add cache header (1 hour)
+    response = JSONResponse(content=response_data)
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
 
 
 @router.get("/{run_id}/table/{table_name}")
@@ -49,7 +57,12 @@ async def get_table(request: Request, run_id: str, table_name: str):
         raise HTTPException(
             status_code=404, detail=f"Table '{table_name}' not found in run '{run_id}'"
         )
-    return schema[table_name]
+    
+    response_data = schema[table_name]
+    # Add cache header (1 hour)
+    response = JSONResponse(content=response_data)
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
 
 
 @router.get("/{run_id}/overview")
@@ -101,17 +114,45 @@ RULES:
 4. Keep it to ONE paragraph, 3-4 sentences max. No bullet points. No markdown headers."""
 
     try:
-        llm = ChatGoogleGenerativeAI(
-            model=settings.GEMINI_MODEL,
-            google_api_key=settings.GOOGLE_API_KEY,
-            temperature=0.3,
-        )
-        response = llm.invoke([HumanMessage(content=prompt)])
+        # Initialize LLM provider
+        try:
+            if AppConfig.LLM_PROVIDER.lower() == "groq":
+                llm_provider = create_llm_provider(
+                    provider_type="groq",
+                    api_key=AppConfig.GROQ_API_KEY,
+                    model=AppConfig.GROQ_MODEL,
+                    temperature=0.3,
+                )
+            else:
+                llm_provider = create_llm_provider(
+                    provider_type="gemini",
+                    api_key=AppConfig.GEMINI_API_KEY,
+                    model=AppConfig.GEMINI_MODEL,
+                    temperature=0.3,
+                )
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM provider: {e}")
+            overview = f"Database contains {total_tables} tables with {total_cols} columns and {total_rows:,} rows."
+            return {
+                "overview": overview,
+                "total_tables": total_tables,
+                "total_columns": total_cols,
+                "total_rows": total_rows,
+                "avg_health": round(avg_health, 1),
+                "pii_count": len(pii_cols),
+                "fk_count": fk_count,
+            }
+        
+        # Estimate tokens
+        estimated_tokens = estimate_messages_tokens([HumanMessage(content=prompt)], llm_provider.get_model_name())
+        logger.info(f"Schema overview - Estimated tokens: {estimated_tokens}")
+        
+        response = llm_provider.invoke([HumanMessage(content=prompt)])
         overview = response.content.strip()
     except Exception as e:
         overview = f"Database contains {total_tables} tables with {total_cols} columns and {total_rows:,} rows."
 
-    return {
+    response_data = {
         "overview": overview,
         "total_tables": total_tables,
         "total_columns": total_cols,
@@ -120,3 +161,8 @@ RULES:
         "pii_count": len(pii_cols),
         "fk_count": fk_count,
     }
+    
+    # Add cache header (1 hour)
+    response = JSONResponse(content=response_data)
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response

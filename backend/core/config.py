@@ -9,6 +9,14 @@ from typing import Optional
 from pydantic_settings import BaseSettings
 from pydantic import field_validator
 
+# Load .env.local first if it exists (for local development), then fall back to .env
+from dotenv import load_dotenv
+_base_dir = Path(__file__).resolve().parent.parent.parent
+if (_base_dir / ".env.local").exists():
+    load_dotenv(_base_dir / ".env.local")
+elif (_base_dir / ".env").exists():
+    load_dotenv(_base_dir / ".env")
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,9 +26,18 @@ class Settings(BaseSettings):
     # ── API Keys ──
     GOOGLE_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-2.5-flash-lite"
+    
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "mixtral-8x7b-32768"
+    
+    # ── LLM Configuration ──
+    LLM_PROVIDER: str = "groq"  # "groq" or "gemini"
+    LLM_TEMPERATURE: float = 0.0  # Deterministic
 
     # ── Pipeline ──
     MAX_RETRIES: int = 3
+    TOKEN_MONTHLY_BUDGET: int = 1_000_000  # Free tier limit
+    TOKEN_BUDGET_THRESHOLD_PERCENT: float = 80.0  # Warn at 80% usage
 
     # ── Paths (computed from project root) ──
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
@@ -37,6 +54,10 @@ class Settings(BaseSettings):
     # ── Database ──
     DATABASE_URL: Optional[str] = None
     NEON_DATABASE_URL: str = ""
+    
+    # ── Supabase Cache (Optional) ──
+    SUPABASE_URL: str = ""
+    SUPABASE_KEY: str = ""
 
     model_config = {
         "env_file": ".env",
@@ -69,13 +90,24 @@ class Settings(BaseSettings):
 
     def validate_keys(self):
         """Validate that required API keys are present."""
-        if not self.GOOGLE_API_KEY:
-            raise ValueError("CRITICAL: GOOGLE_API_KEY is missing from environment variables.")
-        try:
-            preview = f"{self.GOOGLE_API_KEY[:6]}...{self.GOOGLE_API_KEY[-4:]}"
-            logger.info(f"GOOGLE_API_KEY present. Preview={preview} (len={len(self.GOOGLE_API_KEY)})")
-        except Exception:
-            logger.info("GOOGLE_API_KEY present. (unable to preview)")
+        if self.LLM_PROVIDER.lower() == "groq":
+            if not self.GROQ_API_KEY:
+                raise ValueError("CRITICAL: GROQ_API_KEY is missing from environment variables.")
+            try:
+                preview = f"{self.GROQ_API_KEY[:6]}...{self.GROQ_API_KEY[-4:]}"
+                logger.info(f"GROQ_API_KEY present. Preview={preview} (len={len(self.GROQ_API_KEY)})")
+            except Exception:
+                logger.info("GROQ_API_KEY present. (unable to preview)")
+        elif self.LLM_PROVIDER.lower() == "gemini":
+            if not self.GOOGLE_API_KEY:
+                raise ValueError("CRITICAL: GOOGLE_API_KEY is missing from environment variables.")
+            try:
+                preview = f"{self.GOOGLE_API_KEY[:6]}...{self.GOOGLE_API_KEY[-4:]}"
+                logger.info(f"GOOGLE_API_KEY present. Preview={preview} (len={len(self.GOOGLE_API_KEY)})")
+            except Exception:
+                logger.info("GOOGLE_API_KEY present. (unable to preview)")
+        else:
+            raise ValueError(f"Unknown LLM_PROVIDER: {self.LLM_PROVIDER}")
 
     @property
     def DEFAULT_DB_CONNECTION(self) -> str:
@@ -94,9 +126,27 @@ class AppConfig:
     OUTPUT_DIR = settings.OUTPUT_DIR
     LOGS_DIR = settings.LOGS_DIR
     DEFAULT_DB_CONNECTION = settings.DEFAULT_DB_CONNECTION
+    
+    # Gemini (legacy)
     GEMINI_API_KEY = settings.GOOGLE_API_KEY
     GEMINI_MODEL = settings.GEMINI_MODEL
+    
+    # Groq (new)
+    GROQ_API_KEY = settings.GROQ_API_KEY
+    GROQ_MODEL = settings.GROQ_MODEL
+    
+    # LLM Configuration
+    LLM_PROVIDER = settings.LLM_PROVIDER
+    LLM_TEMPERATURE = settings.LLM_TEMPERATURE
+    
+    # Pipeline
     MAX_RETRIES = settings.MAX_RETRIES
+    TOKEN_MONTHLY_BUDGET = settings.TOKEN_MONTHLY_BUDGET
+    TOKEN_BUDGET_THRESHOLD_PERCENT = settings.TOKEN_BUDGET_THRESHOLD_PERCENT
+    
+    # Supabase Cache
+    SUPABASE_URL = settings.SUPABASE_URL
+    SUPABASE_KEY = settings.SUPABASE_KEY
 
     @classmethod
     def validate(cls):

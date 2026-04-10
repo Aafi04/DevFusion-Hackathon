@@ -23,11 +23,23 @@ def should_continue(state: AgentState):
     status = state.get("validation_status", "PENDING")
     retry_count = state.get("retry_count", 0)
 
+    # Validation passed
     if status == "PASSED":
         return "end"
-    if retry_count >= AppConfig.MAX_RETRIES:
+    
+    # Retry statuses
+    if status in ["RETRY", "FAILED"]:
+        if retry_count < AppConfig.MAX_RETRIES:
+            return "retry"
+        else:
+            return "max_retries"
+    
+    # Terminal failure states
+    if status in ["FAILED_FINAL", "FAILED_BUDGET"]:
         return "max_retries"
-    return "retry"
+    
+    # Default (shouldn't reach here)
+    return "max_retries"
 
 
 def build_pipeline():
