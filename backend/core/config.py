@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     # ── Server ──
     HOST: str = "0.0.0.0"
     PORT: int = 8000
-    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000,https://schemadoc-frontend.vercel.app"
     LOG_LEVEL: str = "INFO"
 
     # ── Database ──
