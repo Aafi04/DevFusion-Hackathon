@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -130,6 +131,13 @@ app.include_router(pipeline.router)
 app.include_router(schema.router)
 app.include_router(chat.router)
 app.include_router(export.router)
+
+
+# ── OPTIONS Handler for CORS Preflight ──
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
+    """Handle CORS preflight OPTIONS requests."""
+    return Response(status_code=200)
 
 
 # ── Reset Session ──
