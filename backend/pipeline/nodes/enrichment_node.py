@@ -133,13 +133,26 @@ OUTPUT FORMAT:
     
     # Initialize LLM provider
     try:
+        logger.info(f"🔧 Initializing LLM provider. Config: LLM_PROVIDER={AppConfig.LLM_PROVIDER}, GROQ_KEY_SET={bool(AppConfig.GROQ_API_KEY)}, GEMINI_KEY_SET={bool(AppConfig.GEMINI_API_KEY)}")
+        
         if AppConfig.LLM_PROVIDER.lower() == "groq":
-            llm_provider = create_llm_provider(
-                provider_type="groq",
-                api_key=AppConfig.GROQ_API_KEY,
-                model=AppConfig.GROQ_MODEL,
-                temperature=AppConfig.LLM_TEMPERATURE,
-            )
+            if not AppConfig.GROQ_API_KEY:
+                logger.warning("⚠️ Groq provider selected but GROQ_API_KEY is empty. Falling back to Gemini.")
+                llm_provider = create_llm_provider(
+                    provider_type="gemini",
+                    api_key=AppConfig.GEMINI_API_KEY,
+                    model=AppConfig.GEMINI_MODEL,
+                    temperature=AppConfig.LLM_TEMPERATURE,
+                )
+                logger.info("🔄 Using Gemini (fallback)")
+            else:
+                llm_provider = create_llm_provider(
+                    provider_type="groq",
+                    api_key=AppConfig.GROQ_API_KEY,
+                    model=AppConfig.GROQ_MODEL,
+                    temperature=AppConfig.LLM_TEMPERATURE,
+                )
+                logger.info(f"✅ Using Groq ({AppConfig.GROQ_MODEL})")
         else:  # fallback to gemini
             llm_provider = create_llm_provider(
                 provider_type="gemini",
@@ -147,6 +160,7 @@ OUTPUT FORMAT:
                 model=AppConfig.GEMINI_MODEL,
                 temperature=AppConfig.LLM_TEMPERATURE,
             )
+            logger.info("🔄 Using Gemini (configured default)")
     except Exception as e:
         logger.error(f"Failed to initialize LLM provider: {e}")
         return {"errors": [f"LLM initialization error: {str(e)}"]}
@@ -197,9 +211,15 @@ OUTPUT FORMAT:
 
     # --- 4. Parsing & Merge Logic ---
     try:
-        logger.info(f"EXTRACTING JSON FROM: {final_content[:200]}...")
+        logger.info(f"EXTRACTING JSON FROM: {final_content[:500]}...")
+        logger.info(f"Final content length: {len(final_content)} chars")
+        
         cleaned = _clean_json_string(final_content)
+        logger.info(f"Cleaned content length: {len(cleaned)} chars")
+        logger.info(f"Cleaned content (first 300 chars): {cleaned[:300]}")
+        
         parsed_enrichment = json.loads(cleaned)
+        logger.info(f"✅ JSON parsed successfully. Type: {type(parsed_enrichment)}, Top-level keys: {list(parsed_enrichment.keys())[:5] if isinstance(parsed_enrichment, dict) else 'N/A'}")
 
         if isinstance(parsed_enrichment, list):
             logger.warning("AI returned a LIST of tables. Converting to Dict...")
@@ -210,14 +230,17 @@ OUTPUT FORMAT:
             parsed_enrichment = new_dict
 
         final_enriched_state = {}
-        logger.info(f"MERGE: AI returned keys: {list(parsed_enrichment.keys())}")
-        logger.info(f"MERGE: Expected keys: {list(schema_raw.keys())}")
+        logger.info(f"🔄 MERGE: AI returned keys: {list(parsed_enrichment.keys())}")
+        logger.info(f"🔄 MERGE: Expected keys (from raw): {list(schema_raw.keys())}")
+        logger.info(f"🔄 MERGE: Raw schema table count: {len(schema_raw)}")
+        logger.info(f"🔄 MERGE: Parsed enrichment table count: {len(parsed_enrichment)}")
 
         for table_name, enriched_data in parsed_enrichment.items():
             match_found = False
             for raw_key in schema_raw.keys():
                 if raw_key.lower() == table_name.lower():
                     table_state = copy.deepcopy(schema_raw[raw_key])
+                    logger.info(f"  ✅ Matched AI table '{table_name}' to raw table '{raw_key}'")
                     if "columns" in enriched_data:
                         for col_name, enriched_meta in enriched_data["columns"].items():
                             if col_name in table_state["columns"]:
@@ -236,8 +259,10 @@ OUTPUT FORMAT:
                     break
             if not match_found:
                 logger.warning(
-                    f"SKIPPING AI Table '{table_name}' - No match in raw schema."
+                    f"  ❌ SKIPPING AI Table '{table_name}' - No match in raw schema."
                 )
+        
+        logger.info(f"✅ Final enriched state has {len(final_enriched_state)} tables")
 
         with open(cache_file, "w") as f:
             json.dump(

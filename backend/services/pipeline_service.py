@@ -136,10 +136,11 @@ def execute_pipeline(connection_string: str, session_id: str = "") -> Dict[str, 
 
                 elif node_name == "enrich":
                     enrich_count += 1
+                    provider_name = AppConfig.LLM_PROVIDER.upper() if hasattr(AppConfig, 'LLM_PROVIDER') else "GROQ"
                     pipeline_log.append({
                         "step": "enrich",
                         "status": "success",
-                        "message": f"AI enrichment pass {enrich_count} — Gemini analysis with ReAct tool-calling",
+                        "message": f"AI enrichment pass {enrich_count} — {provider_name} analysis with ReAct tool-calling",
                         "icon": "🧠",
                         "errors": [],
                     })
