@@ -45,32 +45,59 @@ async def lifespan(app: FastAPI):
 
 def ensure_sample_databases():
     """Generate sample databases on startup if they don't exist."""
-    import subprocess
     data_dir = settings.DATA_DIR
     required_dbs = ["demo.db", "ecommerce.db", "music.db"]
     missing_dbs = [db for db in required_dbs if not (data_dir / db).exists()]
     
+    logger.info(f"📊 Database check: {len(required_dbs)} required, {len(required_dbs) - len(missing_dbs)} present")
+    
     if missing_dbs:
-        logger.info(f"🔄 Generating missing sample databases: {missing_dbs}")
+        logger.info(f"🔄 Generating {len(missing_dbs)} missing database(s): {missing_dbs}")
         try:
             generator_script = Path(__file__).resolve().parent.parent / "data" / "generate_samples.py"
+            logger.info(f"📍 Generator script: {generator_script}")
+            logger.info(f"📁 Generator exists: {generator_script.exists()}")
+            
             if generator_script.exists():
+                logger.info(f"▶️ Running generator script...")
                 result = subprocess.run(
                     [sys.executable, str(generator_script)],
                     capture_output=True,
                     text=True,
-                    timeout=30
+                    timeout=60,
+                    cwd=str(data_dir)
                 )
+                
+                if result.stdout:
+                    logger.info(f"Generator output: {result.stdout}")
+                if result.stderr:
+                    logger.info(f"Generator stderr: {result.stderr}")
+                
                 if result.returncode == 0:
                     logger.info("✅ Sample databases generated successfully")
+                    # Verify they exist
+                    for db in missing_dbs:
+                        db_path = data_dir / db
+                        if db_path.exists():
+                            logger.info(f"   ✅ {db} created (size: {db_path.stat().st_size} bytes)")
+                        else:
+                            logger.warning(f"   ❌ {db} still missing after generation")
                 else:
-                    logger.warning(f"⚠️ Database generation warning: {result.stderr}")
+                    logger.warning(f"⚠️ Database generation failed with code {result.returncode}")
+                    if result.stderr:
+                        logger.warning(f"   Error: {result.stderr}")
             else:
                 logger.warning(f"⚠️ Database generator script not found at {generator_script}")
+        except subprocess.TimeoutExpired:
+            logger.warning(f"⚠️ Database generation timed out after 60 seconds")
         except Exception as e:
-            logger.warning(f"⚠️ Could not generate sample databases: {e}")
+            logger.warning(f"⚠️ Could not generate sample databases: {type(e).__name__}: {e}")
     else:
         logger.info(f"✅ All {len(required_dbs)} sample databases present")
+        for db in required_dbs:
+            db_path = data_dir / db
+            if db_path.exists():
+                logger.info(f"   ✅ {db} ready (size: {db_path.stat().st_size} bytes)")
 
 
 # ── App Instance ──
